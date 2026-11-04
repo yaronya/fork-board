@@ -1,0 +1,5 @@
+{
+  "name": "fork-board",
+  "owner": { "name": "Yaron Yarimi" },
+  "plugins": [{ "name": "fork-board", "source": "./" }]
+}

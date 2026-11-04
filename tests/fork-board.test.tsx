@@ -1,0 +1,214 @@
+import { describe, expect, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
+
+import type { Fork, Topic } from '../types'
+import { answerExcerpt, applyAgents, forkExcerpt, nextPage, pageOf, parseBackgrounded, parseTopics, slug, topicFromText, transcriptPath } from '../hooks/forks'
+
+const NOW = Date.parse('2026-11-04T12:00:00Z')
+
+const fork = (over: Partial<Fork>): Fork => ({
+  id: 'abc123',
+  name: 'parent/topic',
+  title: 'Topic',
+  prompt: 'Fork from the parent session: deep dive on this one topic only, "Topic".',
+  startedAt: NOW,
+  state: 'working',
+  ...over,
+})
+
+describe('topics', () => {
+  test('parses the JSON array out of a chatty reply', () => {
+    const topics = parseTopics('Here you go:\n[{"title":"NAT cost","prompt":"Dig into NAT."},{"title":"WAF","prompt":"Check WAF."}]')
+    expect(topics.map(t => t.title).join()).toBe('NAT cost,WAF')
+  })
+  test('drops malformed items', () => {
+    expect(parseTopics('[{"title":"ok","prompt":"p"},{"title":3},{"prompt":"x"}]').length).toBe(1)
+  })
+  test('no array, no topics', () => {
+    expect(parseTopics('nothing here').length).toBe(0)
+  })
+  test('keeps all twelve findings of a long report', () => {
+    const twelve = JSON.stringify(Array.from({ length: 12 }, (_, i) => ({ title: `t${i}`, prompt: 'p' })))
+    expect(parseTopics(twelve).length).toBe(12)
+  })
+  test('caps at thirty', () => {
+    const many = JSON.stringify(Array.from({ length: 40 }, (_, i) => ({ title: `t${i}`, prompt: 'p' })))
+    expect(parseTopics(many).length).toBe(30)
+  })
+  test('a long answer keeps its start and its end', () => {
+    const excerpt = answerExcerpt(`TOP-FINDING${'x'.repeat(30_000)}LAST-QUESTION`)
+    expect([excerpt.startsWith('TOP-FINDING'), excerpt.endsWith('LAST-QUESTION'), excerpt.length < 21_000].join()).toBe('true,true,true')
+  })
+  test('a short answer is kept whole', () => {
+    expect(answerExcerpt('short')).toBe('short')
+  })
+  test('a typed topic takes its first words as the title', () => {
+    expect(topicFromText('compare Aurora proxy bypass cost against the RDS bill')?.title).toBe('compare Aurora proxy bypass cost against')
+  })
+})
+
+describe('pages', () => {
+  const twelve = Array.from({ length: 12 }, (_, i) => i + 1)
+  test('the first page shows nine', () => {
+    expect(pageOf(twelve, 0).shown.join()).toBe('1,2,3,4,5,6,7,8,9')
+  })
+  test('the second page shows the rest', () => {
+    expect(pageOf(twelve, 9).shown.join()).toBe('10,11,12')
+  })
+  test('more after the last page goes back to the first', () => {
+    expect([nextPage(12, 0), nextPage(12, 9)].join()).toBe('9,0')
+  })
+  test('an offset past the list falls back to the first page', () => {
+    expect(pageOf([1, 2], 9).start).toBe(0)
+  })
+})
+
+describe('names', () => {
+  test('slugs a title', () => {
+    expect(slug('Aurora spikes & proxy bypass!')).toBe('aurora-spikes-proxy-bypass')
+  })
+  test('reads the id claude --bg prints', () => {
+    expect(parseBackgrounded('backgrounded · 490a1126 · fb-probe/topic-a\n  claude agents')).toBe('490a1126')
+  })
+  test('builds the transcript path from the cwd', () => {
+    expect(transcriptPath('/Users/me', '/Users/me/dev/env0', 's1')).toBe('/Users/me/.claude/projects/-Users-me-dev-env0/s1.jsonl')
+  })
+})
+
+describe('fork states', () => {
+  test('an idle fork is waiting, and says so once', () => {
+    const { forks, nowWaiting } = applyAgents([fork({})], [{ id: 'abc123', status: 'idle', sessionId: 's1' }], NOW)
+    expect([forks[0]?.state, forks[0]?.waitingSince, forks[0]?.sessionId, nowWaiting.join()].join()).toBe(`waiting,${NOW},s1,Topic`)
+  })
+  test('a fork already waiting keeps its time and is not announced again', () => {
+    const { forks, nowWaiting } = applyAgents([fork({ state: 'waiting', waitingSince: 1 })], [{ id: 'abc123', status: 'idle' }], NOW)
+    expect([forks[0]?.waitingSince, nowWaiting.length].join()).toBe('1,0')
+  })
+  test('a busy fork is working', () => {
+    expect(applyAgents([fork({})], [{ id: 'abc123', status: 'busy', state: 'working' }], NOW).forks[0]?.state).toBe('working')
+  })
+  test('a running fork with no status yet is working', () => {
+    expect(applyAgents([fork({})], [{ id: 'abc123', state: 'working' }], NOW).forks[0]?.state).toBe('working')
+  })
+  test('a fork missing from the list is gone', () => {
+    expect(applyAgents([fork({})], [], NOW).forks[0]?.state).toBe('gone')
+  })
+})
+
+describe('harvest excerpt', () => {
+  const prompt = fork({}).prompt
+  const lines = [
+    { uuid: 'u0', type: 'user', message: { role: 'user', content: 'parent question before the fork' } },
+    { uuid: 'a0', type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'parent answer' }] } },
+    { uuid: 'u1', type: 'user', message: { role: 'user', content: prompt } },
+    { uuid: 'a1', type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'x' }, { type: 'text', text: 'fork finding' }] } },
+    { uuid: 'u2', type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'noise' }] } },
+    { uuid: 'u3', type: 'user', message: { role: 'user', content: 'so we go with option B' } },
+    { uuid: 'a3', type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'agreed, B' }] } },
+  ]
+  const jsonl = `{"cut off line\n${lines.map(l => JSON.stringify(l)).join('\n')}\n`
+
+  test('keeps only what came after the fork prompt', () => {
+    expect(forkExcerpt(jsonl, prompt).excerpt).toBe(
+      'Assistant: fork finding\n\nUser: so we go with option B\n\nAssistant: agreed, B',
+    )
+  })
+  test('starts after what an earlier harvest took', () => {
+    expect(forkExcerpt(jsonl, prompt, 'a1').excerpt).toBe('User: so we go with option B\n\nAssistant: agreed, B')
+  })
+  test('remembers the last message it took', () => {
+    expect(forkExcerpt(jsonl, prompt).lastUuid).toBe('a3')
+  })
+  test('nothing new after the last harvest', () => {
+    expect(forkExcerpt(jsonl, prompt, 'a3').excerpt).toBe('')
+  })
+})
+
+const TOPICS: Topic[] = [
+  { title: 'NAT gateway cost', prompt: 'Dig into NAT.' },
+  { title: 'WAF count mode', prompt: 'Check WAF.' },
+]
+
+test('the band offers each topic on every surface', async ($, on) => {
+  on('state.get', (_, e) => ({
+    value: { value: { shape: 'topics-1', value: e.key === 'topics' ? TOPICS : [] }, version: 1 },
+  }))
+
+  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+    const ui = await $.ui.mount({ plugin: 'fork-board', component: 'AbovePrompt', surface, props: { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 80, scroll: { offset: 0, bodyRows: 12 }, view: {} } })
+    const found = [await ui.find({ key: 'topic-0' }), await ui.find({ key: 'topic-1' }), await ui.find({ key: 'fork-all' })]
+    expect(found.every(Boolean)).toBe(true)
+    await ui.unmount()
+  }
+})
+
+describe('band keys sent as a prompt', () => {
+  const withTopics = (on: Parameters<TestBody>[1], topics: Topic[]) => {
+    on('state.get', (_, e) => ({ value: { value: { shape: 'topics-1', value: e.key === 'topics' ? topics : [] }, version: 1 } }))
+    on('state.set', () => ({ value: { isSet: true, version: 2 } }))
+    on('prompt.submit', (_, e) => ({ text: e.text }))
+  }
+
+  test('x dismisses the topics', async ($, on) => {
+    withTopics(on, TOPICS)
+    expect((await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: 'x' })).drop).toBe('Topics dismissed.')
+  })
+  test('a number past the list says so', async ($, on) => {
+    withTopics(on, TOPICS)
+    expect((await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: '9' })).drop).toBe('No topic 9: the band shows 2.')
+  })
+  test('other prompts pass', async ($, on) => {
+    withTopics(on, TOPICS)
+    expect((await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: 'what about NAT?' })).text).toBe('what about NAT?')
+  })
+  test('on the second page, 1 forks topic 10', async ($, on) => {
+    const twelve = Array.from({ length: 12 }, (_, i) => ({ title: `finding ${i + 1}`, prompt: 'p' }))
+    on('state.get', (_, e) => ({
+      value: e.key === 'offset' ? { value: { shape: 'offset-1', value: 9 }, version: 1 } : { value: { shape: 'topics-1', value: e.key === 'topics' ? twelve : [] }, version: 1 },
+    }))
+    on('state.set', () => ({ value: { isSet: true, version: 2 } }))
+    on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('prompt.submit', (_, e) => ({ text: e.text }))
+    expect((await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: '1' })).drop).toBe('Forking "finding 10" in the background.')
+  })
+  test('with no band, x is an ordinary prompt', async ($, on) => {
+    withTopics(on, [])
+    expect((await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: 'x' })).text).toBe('x')
+  })
+})
+
+test('the band pages twelve findings', async ($, on) => {
+  const twelve = Array.from({ length: 12 }, (_, i) => ({ title: `finding ${i + 1}`, prompt: 'p' }))
+  on('state.get', (_, e) => ({ value: { value: { shape: 'topics-1', value: e.key === 'topics' ? twelve : [] }, version: 1 } }))
+
+  const ui = await $.ui.mount({
+    plugin: 'fork-board',
+    component: 'AbovePrompt',
+    surface: 'terminal',
+    props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  })
+  const found = [
+    await ui.find({ type: 'Text', text: /Topics 1-9 of 12/ }),
+    await ui.find({ key: 'topic-8' }),
+    await ui.find({ type: 'Text', text: /\+3 more · \/topics more/ }),
+  ]
+  expect([found.every(Boolean), Boolean(await ui.find({ key: 'topic-9' }))].join()).toBe('true,false')
+  await ui.unmount()
+})
+
+test('the pane shows which fork waits', async ($, on) => {
+  const forks = [fork({ title: 'NAT gateway cost', state: 'waiting', waitingSince: NOW - 600_000 }), fork({ id: 'def456', title: 'WAF' })]
+  on('state.get', (_, e) => ({ value: { value: { shape: 'forks-1', value: e.key === 'forks' ? forks : [] }, version: 1 } }))
+  on('clock.now', () => ({ value: NOW }))
+
+  const ui = await $.ui.mount({
+    plugin: 'fork-board',
+    component: 'Pane',
+    requestId: 'fork-board',
+    surface: 'terminal',
+    props: { title: 'Forks', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
+  })
+  const found = [await ui.find({ type: 'Text', text: /waiting 10m/ }), await ui.find({ type: 'Text', text: /WAF/ })]
+  expect([found.every(Boolean), Boolean(await ui.find({ type: 'Text', text: /claude attach/ }))].join()).toBe('true,false')
+  await ui.unmount()
+})
