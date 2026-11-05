@@ -2,7 +2,21 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import type { Fork, Topic } from '../types'
-import { answerExcerpt, applyAgents, forkExcerpt, nextPage, pageOf, parseBackgrounded, parseTopics, slug, topicFromText, transcriptPath } from '../hooks/forks'
+import {
+  answerExcerpt,
+  applyAgents,
+  cleanTitle,
+  digTopic,
+  fallbackTitle,
+  forkExcerpt,
+  forkName,
+  forksLabel,
+  nextPage,
+  pageOf,
+  parseBackgrounded,
+  parseTopics,
+  transcriptPath,
+} from '../hooks/forks'
 
 const NOW = Date.parse('2026-11-04T12:00:00Z')
 
@@ -42,8 +56,44 @@ describe('topics', () => {
   test('a short answer is kept whole', () => {
     expect(answerExcerpt('short')).toBe('short')
   })
-  test('a typed topic takes its first words as the title', () => {
-    expect(topicFromText('compare Aurora proxy bypass cost against the RDS bill')?.title).toBe('compare Aurora proxy bypass cost against')
+  test('a topic title from the model is cleaned', () => {
+    expect(parseTopics('[{"title":" \\"NAT cost.\\" ","prompt":"p"}]')[0]?.title).toBe('NAT cost')
+  })
+})
+
+describe('dig', () => {
+  test('a short title before ": " names the fork', () => {
+    expect(digTopic('Cache eviction plan: so to fix the cache we need to evict stale keys')).toEqual({
+      title: 'Cache eviction plan',
+      prompt: 'so to fix the cache we need to evict stale keys',
+    })
+  })
+  test('no title typed leaves it to the model', () => {
+    expect(digTopic('so to fix the cache we need to evict stale keys')).toEqual({ prompt: 'so to fix the cache we need to evict stale keys' })
+  })
+  test('a long sentence before a colon is not a title', () => {
+    expect(digTopic('compare the Aurora proxy bypass cost against the RDS bill: is it worth it')?.title).toBe(undefined)
+  })
+  test('a URL is not a title', () => {
+    expect(digTopic('check https://example.com/pull/1 for drift')?.title).toBe(undefined)
+  })
+  test('an empty dig is nothing', () => {
+    expect(digTopic('   ')).toBe(undefined)
+  })
+  test('with no model title, the first words typed', () => {
+    expect(fallbackTitle('compare Aurora proxy bypass cost against the RDS bill')).toBe('compare Aurora proxy bypass cost against')
+  })
+})
+
+describe('titles', () => {
+  test('drops quotes, a label and a trailing period', () => {
+    expect(cleanTitle('Title: "Cache rollout urgency."')).toBe('Cache rollout urgency')
+  })
+  test('keeps the first line only', () => {
+    expect(cleanTitle('NAT cost\nbecause the gateway...')).toBe('NAT cost')
+  })
+  test('cuts a long title at a word, never mid-word', () => {
+    expect(cleanTitle('help me answer these questions on the quarterly report today')).toBe('help me answer these questions on the')
   })
 })
 
@@ -64,8 +114,14 @@ describe('pages', () => {
 })
 
 describe('names', () => {
-  test('slugs a title', () => {
-    expect(slug('Aurora spikes & proxy bypass!')).toBe('aurora-spikes-proxy-bypass')
+  test('a fork is named by its title after the fork mark', () => {
+    expect(forkName('Cache eviction plan', [])).toBe('⑂ Cache eviction plan')
+  })
+  test('a fork of a fork has the same shape, never the parent chain', () => {
+    expect(forkName('Rollout questions reply', ['⑂ Cache eviction plan'])).toBe('⑂ Rollout questions reply')
+  })
+  test('a title already used in this session gets a number', () => {
+    expect(forkName('NAT cost', ['⑂ NAT cost', '⑂ NAT cost 2'])).toBe('⑂ NAT cost 3')
   })
   test('reads the id claude --bg prints', () => {
     expect(parseBackgrounded('backgrounded · 490a1126 · fb-probe/topic-a\n  claude agents')).toBe('490a1126')
@@ -93,6 +149,40 @@ describe('fork states', () => {
   test('a fork missing from the list is gone', () => {
     expect(applyAgents([fork({})], [], NOW).forks[0]?.state).toBe('gone')
   })
+})
+
+describe('footer label', () => {
+  test('ready first, then running', () => {
+    expect(forksLabel([fork({}), fork({ state: 'waiting' }), fork({ state: 'working' })])).toBe('⑂ 1 ready · 2 running')
+  })
+  test('a zero count is left out', () => {
+    expect(forksLabel([fork({ state: 'waiting' })])).toBe('⑂ 1 ready')
+  })
+  test('only gone forks show nothing', () => {
+    expect(forksLabel([fork({ state: 'gone' })])).toBe(undefined)
+  })
+})
+
+const mountFooter = async (...[$, on, forks]: [...Parameters<TestBody>, Fork[]]) => {
+  on('state.get', (_, e) => ({ value: { value: { shape: 'forks-1', value: e.key === 'forks' ? forks : [] }, version: 1 } }))
+  // Stands for the engine and any plugin beneath: draws the labels it is handed, joined as the footer joins them.
+  on('ui.render', { component: 'SessionMode' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>{`[${e.props.modes.join(' & ')}]`}</Text>
+  })
+  return $.ui.mount({ plugin: 'fork-board', component: 'SessionMode', surface: 'terminal', props: { modes: ['focus'] } })
+}
+
+test('the footer keeps the other modes and adds the fork counts last', async ($, on) => {
+  const ui = await mountFooter($, on, [fork({ state: 'waiting' }), fork({})])
+  expect(Boolean(await ui.find({ type: 'Text', text: '[focus & ⑂ 1 ready · 1 running]' }))).toBe(true)
+  await ui.unmount()
+})
+
+test('with no live fork the footer is passed on untouched', async ($, on) => {
+  const ui = await mountFooter($, on, [fork({ state: 'gone' })])
+  expect(Boolean(await ui.find({ type: 'Text', text: '[focus]' }))).toBe(true)
+  await ui.unmount()
 })
 
 describe('harvest excerpt', () => {
@@ -196,7 +286,7 @@ test('the band pages twelve findings', async ($, on) => {
   await ui.unmount()
 })
 
-test('the pane shows which fork waits', async ($, on) => {
+test('the pane shows which fork is ready', async ($, on) => {
   const forks = [fork({ title: 'NAT gateway cost', state: 'waiting', waitingSince: NOW - 600_000 }), fork({ id: 'def456', title: 'WAF' })]
   on('state.get', (_, e) => ({ value: { value: { shape: 'forks-1', value: e.key === 'forks' ? forks : [] }, version: 1 } }))
   on('clock.now', () => ({ value: NOW }))
@@ -208,7 +298,21 @@ test('the pane shows which fork waits', async ($, on) => {
     surface: 'terminal',
     props: { title: 'Forks', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
   })
-  const found = [await ui.find({ type: 'Text', text: /waiting 10m/ }), await ui.find({ type: 'Text', text: /WAF/ })]
+  const found = [await ui.find({ type: 'Text', text: /ready 10m/ }), await ui.find({ type: 'Text', text: /WAF/ })]
   expect([found.every(Boolean), Boolean(await ui.find({ type: 'Text', text: /claude attach/ }))].join()).toBe('true,false')
+  await ui.unmount()
+})
+
+test('a pane button label does not repeat the hotkey the painter draws before it', async ($, on) => {
+  on('state.get', () => ({ value: { value: { shape: 'forks-1', value: [] }, version: 1 } }))
+  on('clock.now', () => ({ value: NOW }))
+  const ui = await $.ui.mount({
+    plugin: 'fork-board',
+    component: 'Pane',
+    requestId: 'fork-board',
+    surface: 'terminal',
+    props: { title: 'Forks', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
+  })
+  expect([(await ui.find({ key: 'refresh' }))?.text, (await ui.find({ key: 'forget' }))?.text].join()).toBe('refresh,forget gone')
   await ui.unmount()
 })

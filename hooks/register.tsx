@@ -5,15 +5,19 @@ import type { Fork, Topic } from '../types'
 import {
   type Agent,
   applyAgents,
+  cleanTitle,
+  digTopic,
+  fallbackTitle,
   forkExcerpt,
+  forkName,
   forkPrompt,
+  forksLabel,
   harvestRequest,
   nextPage,
   pageOf,
   parseBackgrounded,
   parseTopics,
-  slug,
-  topicFromText,
+  titleRequest,
   topicsRequest,
   transcriptPath,
 } from './forks'
@@ -60,18 +64,14 @@ async function poll($: EngineInterface): Promise<void> {
   if (!forks.some(fork => fork.state !== 'gone')) return
   const { forks: next, nowWaiting } = applyAgents(forks, await listAgents($), await $.clock.now())
   if (JSON.stringify(next) !== JSON.stringify(forks)) await saveForks($, next)
-  for (const title of nowWaiting) $.ui.toast(`"${title}" is waiting for you`)
-  const working = next.filter(f => f.state === 'working').length
-  const waiting = next.filter(f => f.state === 'waiting').length
-  $.ui.status(working + waiting > 0 ? `forks: ${working} working · ${waiting} waiting` : undefined)
+  for (const title of nowWaiting) $.ui.toast(`"${title}" is ready`)
 }
 
 async function forkTopic($: EngineInterface, topic: Topic): Promise<string> {
   const sessionId = await $.session.id()
   const cwd = await $.session.cwd()
   const model = await $.session.model()
-  const parent = (await listAgents($)).find(agent => agent.sessionId === sessionId)?.name || sessionId.slice(0, 8)
-  const name = `${parent}/${slug(topic.title)}`
+  const name = forkName(topic.title, (await read($, forksAtom)).map(fork => fork.name))
   const prompt = forkPrompt(topic)
   const argv = ['claude', '-r', sessionId, '--fork-session', '--bg', '-n', name]
   if (/^[\w.[\]-]+$/.test(model)) argv.push('--model', model)
@@ -84,6 +84,16 @@ async function forkTopic($: EngineInterface, topic: Topic): Promise<string> {
   await saveForks($, [...(await read($, forksAtom)), fork])
   await update($, topicsAtom, topics => topics.filter(t => t.title !== topic.title))
   return `forked "${topic.title}" as ${name} · claude attach ${id}`
+}
+
+// A `/dig` with no typed title gets a short one from the model, so the session list reads by subject.
+async function titleFor($: EngineInterface, prompt: string): Promise<string> {
+  try {
+    const reply = await $.model.complete({ model: 'haiku', prompt: titleRequest(prompt), maxTokens: 40 })
+    return (reply.isAnswered && cleanTitle(reply.text)) || fallbackTitle(prompt)
+  } catch {
+    return fallbackTitle(prompt)
+  }
 }
 
 // Runs detached from a key or a click, so a failure becomes a toast, never an unhandled rejection.
@@ -178,7 +188,7 @@ async function harvest($: EngineInterface): Promise<string> {
   await saveForks($, next)
   return sections.length > 0
     ? `Results from forked sessions, new since the last harvest:\n\n${sections.join('\n\n')}`
-    : 'no fork has new results (a fork still working is skipped).'
+    : 'no fork has new results (a fork still running is skipped).'
 }
 
 // A band key sent as a prompt (`1`-`9`, `a`, `x`) while the band shows; undefined when it is not one.
@@ -214,9 +224,11 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     await $.command.register({ name: 'topics', description: 'List the open threads of the last answer, each one key away from a fork' })
-    await $.command.register({ name: 'dig', description: 'Fork this session into a named background session on the topic you type' })
-    await $.command.register({ name: 'forks', description: "Show this session's forks and which wait for you" })
-    await $.command.register({ name: 'harvest', description: 'Bring the conclusions of forks that wait for you back into this session' })
+    await $.command.register({ name: 'dig', description: 'Fork this session into a named background session on the topic you type (/dig <title>: <topic> names it)' })
+    await $.command.register({ name: 'forks', description: "Show this session's forks and which are ready" })
+    await $.command.register({ name: 'harvest', description: 'Bring the conclusions of ready forks back into this session' })
+    // An earlier version pinned the counts with $.ui.status, which outlives a reload.
+    $.ui.status(undefined)
     await loadForks($)
     $.clock.every(POLL_MS, () => void poll($))
     return started
@@ -234,8 +246,16 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'dig' }, async ($, e) => {
-    const topic = topicFromText(e.args)
-    return { text: topic ? await forkTopic($, topic) : 'type the topic after the command, /dig <what to dig into>.' }
+    const dig = digTopic(e.args)
+    if (!dig) return { text: 'type the topic after the command: /dig <what to dig into>, or /dig <title>: <what to dig into>.' }
+    return { text: await forkTopic($, { title: dig.title ?? (await titleFor($, dig.prompt)), prompt: dig.prompt }) }
+  })
+
+  // The footer's mode labels compose: each plugin adds its own and passes the list on. The hint line
+  // beside them is often redrawn whole by another mod (a PR status line), so the counts stay out of it.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const label = forksLabel(await read($, forksAtom))
+    return next(label ? { ...e, props: { ...e.props, modes: [...e.props.modes, label] } } : e)
   })
 
   on('command.run', { command: 'forks' }, async $ => {
@@ -291,23 +311,28 @@ export const register: Register = on => {
         {forks.map(fork => (
           <Box flexDirection="column" marginBottom={1}>
             <Box flexDirection="row" gap={1}>
-              <Text color={fork.state === 'waiting' ? 'warning' : fork.state === 'working' ? 'success' : 'subtle'}>
-                {fork.state === 'waiting' ? `● waiting ${ago(fork.waitingSince, now)}` : fork.state === 'working' ? '◐ working' : '○ gone'}
-              </Text>
+              {fork.state === 'waiting' ? (
+                <Text color="success">{`● ready ${ago(fork.waitingSince, now)}`}</Text>
+              ) : fork.state === 'working' ? (
+                <Text dimColor>◐ running</Text>
+              ) : (
+                <Text color="subtle">○ gone</Text>
+              )}
               <Text weight="bold">{clip(fork.title, columns - 20)}</Text>
               {fork.harvestedUuid && <Text dimColor>harvested</Text>}
             </Box>
           </Box>
         ))}
+        {/* A plain Button draws its hotkey before the label itself (`r: refresh`). */}
         <Box flexDirection="row" gap={2}>
           <Button key="refresh" hotkey="r" plain onPress={() => void poll($)}>
-            r refresh
+            refresh
           </Button>
           <Button key="forget" hotkey="g" plain onPress={() => void forget($)}>
-            g forget gone
+            forget gone
           </Button>
         </Box>
-        <Text dimColor>/harvest brings waiting forks' conclusions here.</Text>
+        <Text dimColor>/harvest brings ready forks' conclusions here.</Text>
       </Box>
     )
   })
