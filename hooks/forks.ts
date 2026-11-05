@@ -22,15 +22,36 @@ export function pageOf<T>(topics: T[], offset: number): { shown: T[]; start: num
 // The offset of the page after the one at `offset`, back to the first after the last.
 export const nextPage = (count: number, offset: number) => (offset + PAGE_SIZE < count ? offset + PAGE_SIZE : 0)
 
-export function slug(title: string): string {
-  return (
-    title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 32)
-      .replace(/-+$/, '') || 'topic'
-  )
+// Leads every fork's session name, so `claude agents` tells forks apart from sessions started by hand.
+export const FORK_MARK = '⑂'
+const MAX_TITLE_CHARS = 40
+
+// One line of plain words, cut at a word boundary: a model's reply or a typed title, made fit to name a session.
+export function cleanTitle(raw: string): string {
+  const line = (raw.trim().split('\n')[0] ?? '')
+    .replace(/^title:\s*/i, '')
+    .replace(/^["'`*_\s]+|["'`*_\s.,;:]+$/g, '')
+    .replace(/\s+/g, ' ')
+  if (line.length <= MAX_TITLE_CHARS) return line
+  const cut = line.slice(0, MAX_TITLE_CHARS + 1)
+  const space = cut.lastIndexOf(' ')
+  return (space > 0 ? cut.slice(0, space) : line.slice(0, MAX_TITLE_CHARS)).replace(/[\s.,;:-]+$/, '')
+}
+
+// A fork's session name: the mark, then its title; a title this session already used gets a number.
+export function forkName(title: string, taken: readonly string[]): string {
+  const base = `${FORK_MARK} ${title || 'Topic'}`
+  let name = base
+  for (let n = 2; taken.includes(name); n++) name = `${base} ${n}`
+  return name
+}
+
+// What the footer says about this session's forks; undefined when none is running or ready.
+export function forksLabel(forks: readonly Fork[]): string | undefined {
+  const ready = forks.filter(fork => fork.state === 'waiting').length
+  const running = forks.filter(fork => fork.state === 'working').length
+  const parts = [ready > 0 && `${ready} ready`, running > 0 && `${running} running`].filter(Boolean)
+  return parts.length > 0 ? `${FORK_MARK} ${parts.join(' · ')}` : undefined
 }
 
 export const topicsRequest = (answer: string) =>
@@ -61,7 +82,7 @@ export function parseTopics(reply: string): Topic[] {
       (item): item is Topic =>
         typeof item === 'object' && item !== null && typeof item.title === 'string' && typeof item.prompt === 'string',
     )
-    .map(({ title, prompt }) => ({ title: title.trim(), prompt: prompt.trim() }))
+    .map(({ title, prompt }) => ({ title: cleanTitle(title), prompt: prompt.trim() }))
     .filter(topic => topic.title && topic.prompt)
     .slice(0, MAX_TOPICS)
 }
@@ -69,12 +90,28 @@ export function parseTopics(reply: string): Topic[] {
 export const forkPrompt = (topic: Topic) =>
   `Fork from the parent session: deep dive on this one topic only, "${topic.title}". ${topic.prompt}\n\nThe parent session carries on with the other threads, so stay on this one.`
 
-// The topic a typed `/dig <text>` names: the first words as the title.
-export function topicFromText(text: string): Topic | undefined {
-  const prompt = text.trim()
-  if (!prompt) return undefined
-  return { title: prompt.split(/\s+/).slice(0, 6).join(' '), prompt }
+// `/dig <title>: <prompt>` names the fork itself; with no short title before `: `, the title is left to the model.
+export function digTopic(text: string): { prompt: string; title?: string } | undefined {
+  const typed = text.trim()
+  if (!typed) return undefined
+  const match = typed.match(/^([^:\n]+):\s+(\S[\s\S]*)$/)
+  const title = match?.[1] && match[1].trim().split(/\s+/).length <= 6 ? cleanTitle(match[1]) : ''
+  return title && match?.[2] ? { title, prompt: match[2].trim() } : { prompt: typed }
 }
+
+// The title when the model gives none: the first words typed.
+export const fallbackTitle = (prompt: string) => cleanTitle(prompt.split(/\s+/).slice(0, 6).join(' '))
+
+export const titleRequest = (prompt: string) =>
+  [
+    'Write a 3 to 5 word title for the topic below, for a list of parallel work sessions.',
+    "Name the subject, not the action or the filler around it: 'Cache eviction plan', not 'So to fix the'. Keep acronyms and ticket ids.",
+    'Reply with the title only: no quotes, no trailing period.',
+    '',
+    '<topic>',
+    prompt.slice(0, 4_000),
+    '</topic>',
+  ].join('\n')
 
 // `claude --bg` prints `backgrounded · <id> · <name>`.
 export function parseBackgrounded(stdout: string): string | undefined {
