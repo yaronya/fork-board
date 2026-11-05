@@ -93,7 +93,13 @@ describe('titles', () => {
     expect(cleanTitle('NAT cost\nbecause the gateway...')).toBe('NAT cost')
   })
   test('cuts a long title at a word, never mid-word', () => {
-    expect(cleanTitle('help me answer these questions on the quarterly report today')).toBe('help me answer these questions on the')
+    expect(cleanTitle('Rotate staging database credentials before Friday release window')).toBe('Rotate staging database credentials')
+  })
+  test('a cut title does not end on a connecting word', () => {
+    expect(cleanTitle('Expire S3 incomplete uploads and noncurrent versions')).toBe('Expire S3 incomplete uploads')
+  })
+  test('a cut title drops a run of connecting words', () => {
+    expect(cleanTitle('help me answer these questions on the quarterly report today')).toBe('help me answer these questions')
   })
 })
 
@@ -170,7 +176,7 @@ const mountFooter = async (...[$, on, forks]: [...Parameters<TestBody>, Fork[]])
     const { Text } = $.ui.resolve(e)
     return <Text>{`[${e.props.modes.join(' & ')}]`}</Text>
   })
-  return $.ui.mount({ plugin: 'fork-board', component: 'SessionMode', surface: 'terminal', props: { modes: ['focus'] } })
+  return $.ui.mount({ plugin: 'sidequest', component: 'SessionMode', surface: 'terminal', props: { modes: ['focus'] } })
 }
 
 test('the footer keeps the other modes and adds the fork counts last', async ($, on) => {
@@ -225,7 +231,7 @@ test('the band offers each topic on every surface', async ($, on) => {
   }))
 
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
-    const ui = await $.ui.mount({ plugin: 'fork-board', component: 'AbovePrompt', surface, props: { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 80, scroll: { offset: 0, bodyRows: 12 }, view: {} } })
+    const ui = await $.ui.mount({ plugin: 'sidequest', component: 'AbovePrompt', surface, props: { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 80, scroll: { offset: 0, bodyRows: 12 }, view: {} } })
     const found = [await ui.find({ key: 'topic-0' }), await ui.find({ key: 'topic-1' }), await ui.find({ key: 'fork-all' })]
     expect(found.every(Boolean)).toBe(true)
     await ui.unmount()
@@ -241,11 +247,11 @@ describe('band keys sent as a prompt', () => {
 
   test('x dismisses the topics', async ($, on) => {
     withTopics(on, TOPICS)
-    expect((await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: 'x' })).drop).toBe('Topics dismissed.')
+    expect((await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: 'x' })).drop).toBe('Side quests dismissed.')
   })
   test('a number past the list says so', async ($, on) => {
     withTopics(on, TOPICS)
-    expect((await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: '9' })).drop).toBe('No topic 9: the band shows 2.')
+    expect((await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: '9' })).drop).toBe('No side quest 9: the band shows 2.')
   })
   test('other prompts pass', async ($, on) => {
     withTopics(on, TOPICS)
@@ -272,15 +278,15 @@ test('the band pages twelve findings', async ($, on) => {
   on('state.get', (_, e) => ({ value: { value: { shape: 'topics-1', value: e.key === 'topics' ? twelve : [] }, version: 1 } }))
 
   const ui = await $.ui.mount({
-    plugin: 'fork-board',
+    plugin: 'sidequest',
     component: 'AbovePrompt',
     surface: 'terminal',
     props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} },
   })
   const found = [
-    await ui.find({ type: 'Text', text: /Topics 1-9 of 12/ }),
+    await ui.find({ type: 'Text', text: /Side quests 1-9 of 12/ }),
     await ui.find({ key: 'topic-8' }),
-    await ui.find({ type: 'Text', text: /\+3 more · \/topics more/ }),
+    await ui.find({ type: 'Text', text: /\+3 more · \/quests more/ }),
   ]
   expect([found.every(Boolean), Boolean(await ui.find({ key: 'topic-9' }))].join()).toBe('true,false')
   await ui.unmount()
@@ -292,11 +298,11 @@ test('the pane shows which fork is ready', async ($, on) => {
   on('clock.now', () => ({ value: NOW }))
 
   const ui = await $.ui.mount({
-    plugin: 'fork-board',
+    plugin: 'sidequest',
     component: 'Pane',
-    requestId: 'fork-board',
+    requestId: 'sidequest',
     surface: 'terminal',
-    props: { title: 'Forks', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
+    props: { title: 'Side quests', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
   })
   const found = [await ui.find({ type: 'Text', text: /ready 10m/ }), await ui.find({ type: 'Text', text: /WAF/ })]
   expect([found.every(Boolean), Boolean(await ui.find({ type: 'Text', text: /claude attach/ }))].join()).toBe('true,false')
@@ -307,11 +313,11 @@ test('a pane button label does not repeat the hotkey the painter draws before it
   on('state.get', () => ({ value: { value: { shape: 'forks-1', value: [] }, version: 1 } }))
   on('clock.now', () => ({ value: NOW }))
   const ui = await $.ui.mount({
-    plugin: 'fork-board',
+    plugin: 'sidequest',
     component: 'Pane',
-    requestId: 'fork-board',
+    requestId: 'sidequest',
     surface: 'terminal',
-    props: { title: 'Forks', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
+    props: { title: 'Side quests', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
   })
   expect([(await ui.find({ key: 'refresh' }))?.text, (await ui.find({ key: 'forget' }))?.text].join()).toBe('refresh,forget gone')
   await ui.unmount()
