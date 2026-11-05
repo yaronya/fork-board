@@ -15,7 +15,7 @@ Every side quest shows up in the `claude agents` view as `⑂ <title>`, so it st
 At the prompt of a Claude Code terminal session:
 
 ```
-/plugin install sidequest --marketplace yaronya/fork-board
+/plugin install sidequest --marketplace yaronya/sidequest
 ```
 
 Answer `y` to add the marketplace, then pick a scope (user scope loads it in every session).
@@ -23,7 +23,7 @@ Answer `y` to add the marketplace, then pick a scope (user scope loads it in eve
 From a shell:
 
 ```
-claude plugin install sidequest --marketplace yaronya/fork-board
+claude plugin install sidequest --marketplace yaronya/sidequest
 ```
 
-In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `yaronya/fork-board`, then Add plugin.
+In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `yaronya/sidequest`, then Add plugin.
