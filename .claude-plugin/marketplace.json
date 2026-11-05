@@ -1,5 +1,5 @@
 {
-  "name": "fork-board",
+  "name": "sidequest",
   "owner": { "name": "Yaron Yarimi" },
   "plugins": [{ "name": "sidequest", "source": "./" }],
   "renames": { "fork-board": "sidequest" }
