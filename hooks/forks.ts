@@ -25,6 +25,8 @@ export const nextPage = (count: number, offset: number) => (offset + PAGE_SIZE <
 // Leads every fork's session name, so `claude agents` tells forks apart from sessions started by hand.
 export const FORK_MARK = '⑂'
 const MAX_TITLE_CHARS = 40
+// A cut title ends on a word that carries meaning, never on "and", "with" or "the".
+const DANGLING_WORDS = /(?:\s+(?:a|an|and|at|by|for|from|in|of|on|or|the|to|via|vs|with))+$/i
 
 // One line of plain words, cut at a word boundary: a model's reply or a typed title, made fit to name a session.
 export function cleanTitle(raw: string): string {
@@ -35,7 +37,7 @@ export function cleanTitle(raw: string): string {
   if (line.length <= MAX_TITLE_CHARS) return line
   const cut = line.slice(0, MAX_TITLE_CHARS + 1)
   const space = cut.lastIndexOf(' ')
-  return (space > 0 ? cut.slice(0, space) : line.slice(0, MAX_TITLE_CHARS)).replace(/[\s.,;:-]+$/, '')
+  return (space > 0 ? cut.slice(0, space) : line.slice(0, MAX_TITLE_CHARS)).replace(/[\s.,;:-]+$/, '').replace(DANGLING_WORDS, '')
 }
 
 // A fork's session name: the mark, then its title; a title this session already used gets a number.

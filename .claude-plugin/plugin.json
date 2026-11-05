@@ -1,6 +1,6 @@
 {
-  "name": "fork-board",
-  "version": "0.2.0",
-  "description": "Fork the open topics of an answer into named background sessions with one key each, track which are ready, and harvest their conclusions back",
+  "name": "sidequest",
+  "version": "0.3.0",
+  "description": "Turn the open threads of an answer into side quests: forked background sessions, one key each. See which are ready and harvest their conclusions back",
   "types": "./types/index.d.ts"
 }

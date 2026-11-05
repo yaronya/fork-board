@@ -22,15 +22,15 @@ import {
   transcriptPath,
 } from './forks'
 
-const PANE = 'fork-board'
+const PANE = 'sidequest'
 const POLL_MS = 20_000
 // Large enough for a long fork discussion; the copied parent history before it is skipped.
 const TRANSCRIPT_TAIL_BYTES = '3000000'
 
 // Change a tag when that value's fields change: a reload keeps what the old code stored.
-const topicsAtom = atom({ plugin: 'fork-board', key: 'topics' } as const, [], { shape: 'topics-1' })
-const offsetAtom = atom({ plugin: 'fork-board', key: 'offset' } as const, 0, { shape: 'offset-1' })
-const forksAtom = atom({ plugin: 'fork-board', key: 'forks' } as const, [], { shape: 'forks-1' })
+const topicsAtom = atom({ plugin: 'sidequest', key: 'topics' } as const, [], { shape: 'topics-1' })
+const offsetAtom = atom({ plugin: 'sidequest', key: 'offset' } as const, 0, { shape: 'offset-1' })
+const forksAtom = atom({ plugin: 'sidequest', key: 'forks' } as const, [], { shape: 'forks-1' })
 
 const firstLine = (text: string) => text.trim().split('\n')[0] ?? ''
 
@@ -125,10 +125,10 @@ async function dismiss($: EngineInterface): Promise<void> {
 
 async function showMore($: EngineInterface): Promise<string> {
   const topics = await read($, topicsAtom)
-  if (topics.length === 0) return 'no topics listed. Run /topics after an answer first.'
+  if (topics.length === 0) return 'no side quests listed. Run /quests after an answer first.'
   const offset = nextPage(topics.length, await read($, offsetAtom))
   await update($, offsetAtom, () => offset)
-  return `the band shows topics ${offset + 1}-${Math.min(offset + 9, topics.length)} of ${topics.length}.`
+  return `the band shows side quests ${offset + 1}-${Math.min(offset + 9, topics.length)} of ${topics.length}.`
 }
 
 // The last answer: the assistant text since the last user prompt.
@@ -144,15 +144,15 @@ async function lastAnswer($: EngineInterface): Promise<string> {
 
 async function findTopics($: EngineInterface): Promise<string> {
   const answer = await lastAnswer($)
-  if (!answer) return 'no answer to read topics from yet.'
+  if (!answer) return 'no answer to read side quests from yet.'
   const reply = await $.model.complete({ model: 'haiku', prompt: topicsRequest(answer), maxTokens: 6000 })
   if (!reply.isAnswered) return `the topic model did not answer (${reply.reason}).`
   const topics = parseTopics(reply.text)
   await update($, topicsAtom, () => topics)
   await update($, offsetAtom, () => 0)
   if (topics.length === 0) return 'found no separate threads in the last answer.'
-  const more = topics.length > 9 ? ` /topics more shows the next ${Math.min(9, topics.length - 9)}.` : ''
-  return `${topics.length} topics, ranked by impact, are in the band above the prompt. Send a topic's number to fork it, a to fork the ones shown, x to dismiss.${more}`
+  const more = topics.length > 9 ? ` /quests more shows the next ${Math.min(9, topics.length - 9)}.` : ''
+  return `${topics.length} side quests, ranked by impact, are in the band above the prompt. Send a number to fork one, a to fork the ones shown, x to dismiss.${more}`
 }
 
 async function harvest($: EngineInterface): Promise<string> {
@@ -187,8 +187,8 @@ async function harvest($: EngineInterface): Promise<string> {
 
   await saveForks($, next)
   return sections.length > 0
-    ? `Results from forked sessions, new since the last harvest:\n\n${sections.join('\n\n')}`
-    : 'no fork has new results (a fork still running is skipped).'
+    ? `Results from side quests, new since the last harvest:\n\n${sections.join('\n\n')}`
+    : 'no side quest has new results (one still running is skipped).'
 }
 
 // A band key sent as a prompt (`1`-`9`, `a`, `x`) while the band shows; undefined when it is not one.
@@ -198,14 +198,14 @@ async function bandKey($: EngineInterface, text: string): Promise<string | undef
   if (topics.length === 0 || !/^(?:[1-9]|a|x)$/.test(key)) return undefined
   if (key === 'x') {
     await dismiss($)
-    return 'Topics dismissed.'
+    return 'Side quests dismissed.'
   }
   if (key === 'a') {
     void forkShown($)
-    return `Forking the ${shown.length} topics shown in the background.`
+    return `Forking the ${shown.length} side quests shown in the background.`
   }
   const topic = shown[Number(key) - 1]
-  if (!topic) return `No topic ${key}: the band shows ${shown.length}.`
+  if (!topic) return `No side quest ${key}: the band shows ${shown.length}.`
   void forkAndToast($, topic)
   return `Forking "${topic.title}" in the background.`
 }
@@ -223,10 +223,10 @@ function ago(at: number | undefined, now: number): string {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    await $.command.register({ name: 'topics', description: 'List the open threads of the last answer, each one key away from a fork' })
-    await $.command.register({ name: 'dig', description: 'Fork this session into a named background session on the topic you type (/dig <title>: <topic> names it)' })
-    await $.command.register({ name: 'forks', description: "Show this session's forks and which are ready" })
-    await $.command.register({ name: 'harvest', description: 'Bring the conclusions of ready forks back into this session' })
+    await $.command.register({ name: 'quests', description: 'List the side quests in the last answer, each one key away from a fork' })
+    await $.command.register({ name: 'dig', description: 'Start a side quest on the topic you type, as a forked background session (/dig <title>: <topic> names it)' })
+    await $.command.register({ name: 'questlog', description: "Show this session's side quests and which are ready" })
+    await $.command.register({ name: 'harvest', description: 'Bring the conclusions of ready side quests back into this session' })
     // An earlier version pinned the counts with $.ui.status, which outlives a reload.
     $.ui.status(undefined)
     await loadForks($)
@@ -234,7 +234,7 @@ export const register: Register = on => {
     return started
   })
 
-  on('command.run', { command: 'topics' }, async ($, e) => ({
+  on('command.run', { command: 'quests' }, async ($, e) => ({
     text: e.args.trim() === 'more' ? await showMore($) : await findTopics($),
   }))
 
@@ -258,10 +258,10 @@ export const register: Register = on => {
     return next(label ? { ...e, props: { ...e.props, modes: [...e.props.modes, label] } } : e)
   })
 
-  on('command.run', { command: 'forks' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'Forks' })
+  on('command.run', { command: 'questlog' }, async $ => {
+    await $.ui.open({ id: PANE, title: 'Side quests' })
     void poll($)
-    return { text: 'forks pane opened.' }
+    return { text: 'quest log opened.' }
   })
 
   on('command.run', { command: 'harvest' }, async $ => ({ text: await harvest($) }))
@@ -276,7 +276,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Text dimColor>
-          {`Topics ${start + 1}-${end} of ${topics.length}, by impact. Send a number to fork it, a for these, x to dismiss:`}
+          {`Side quests ${start + 1}-${end} of ${topics.length}, by impact. Send a number to fork it, a for these, x to dismiss:`}
         </Text>
         {shown.map((topic, index) => (
           <Button key={`topic-${index}`} hotkey={String(index + 1)} onPress={() => void forkAndToast($, topic)}>
@@ -284,7 +284,7 @@ export const register: Register = on => {
           </Button>
         ))}
         {(rest > 0 || start > 0) && (
-          <Text dimColor>{rest > 0 ? `+${rest} more · /topics more` : '/topics more goes back to the first page'}</Text>
+          <Text dimColor>{rest > 0 ? `+${rest} more · /quests more` : '/quests more goes back to the first page'}</Text>
         )}
         <Box flexDirection="row" gap={2}>
           <Button key="fork-all" hotkey="a" onPress={() => void forkShown($)}>
@@ -307,7 +307,7 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        {forks.length === 0 && <Text dimColor>No forks yet. Run /topics after an answer, or /dig &lt;topic&gt;.</Text>}
+        {forks.length === 0 && <Text dimColor>No side quests yet. Run /quests after an answer, or /dig &lt;topic&gt;.</Text>}
         {forks.map(fork => (
           <Box flexDirection="column" marginBottom={1}>
             <Box flexDirection="row" gap={1}>
@@ -332,7 +332,7 @@ export const register: Register = on => {
             forget gone
           </Button>
         </Box>
-        <Text dimColor>/harvest brings ready forks' conclusions here.</Text>
+        <Text dimColor>/harvest brings ready side quests' conclusions here.</Text>
       </Box>
     )
   })

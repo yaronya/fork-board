@@ -19,7 +19,7 @@ export type Fork = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'fork-board': {
+    sidequest: {
       topics: Shaped<Topic[]>
       // Where the band's page of 9 starts in topics
       offset: Shaped<number>
